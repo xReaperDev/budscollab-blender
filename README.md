@@ -4,20 +4,17 @@ Blender add-on for testing BudsCollab asset workflows from the 3D View.
 
 ## Install from a ZIP
 
-1. Download `budscollab-blender.zip` from the public repo release.
+1. Download `budscollab-blender-v0.1.0.zip` from the public repo release.
 2. Open Blender.
 3. Go to `Edit > Preferences > Add-ons`.
 4. Click `Install from Disk...`.
 5. Select the ZIP and enable `BudsCollab for Blender`.
 
-When this package is exported to its public repo, releases should live at:
+Use the latest release:
 
 ```txt
 https://github.com/xReaperDev/budscollab-blender/releases
 ```
-
-For private monorepo testing, install the `integrations/blender` folder directly
-from a local checkout.
 
 ## Use
 
