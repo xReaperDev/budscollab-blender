@@ -1,0 +1,9 @@
+schema_version = "1.0.0"
+id = "budscollab_for_blender"
+version = "0.1.0"
+name = "BudsCollab for Blender"
+tagline = "Create, validate, and send Blender assets through BudsCollab"
+maintainer = "BudsCollab"
+type = "add-on"
+blender_version_min = "4.2.0"
+license = ["SPDX:Proprietary"]
