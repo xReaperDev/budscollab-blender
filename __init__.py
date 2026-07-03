@@ -1,7 +1,7 @@
 bl_info = {
     "name": "BudsCollab for Blender",
     "author": "BudsCollab",
-    "version": (0, 1, 3),
+    "version": (0, 1, 4),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > BudsCollab",
     "description": "Connect Blender to BudsCollab spaces and prepare GLB assets.",
@@ -18,11 +18,44 @@ import bpy
 
 WORKSPACE_ENDPOINT = "/api/creator-tools/workspace"
 NONE_ID = "__none__"
-GOOD_TRIANGLE_COUNT = 70000
-HEAVY_TRIANGLE_COUNT = 250000
-GOOD_MATERIAL_SLOTS = 8
-HEAVY_MATERIAL_SLOTS = 32
-LARGE_BOUNDS_METERS = 6.0
+TARGET_PROFILES = {
+    "room_object": {
+        "label": "Room object",
+        "good_triangles": 70000,
+        "max_triangles": 250000,
+        "good_materials": 8,
+        "max_materials": 32,
+        "max_bounds": 6.0,
+    },
+    "mobile_light": {
+        "label": "Mobile / lightweight",
+        "good_triangles": 20000,
+        "max_triangles": 70000,
+        "good_materials": 4,
+        "max_materials": 12,
+        "max_bounds": 4.0,
+    },
+    "high_detail": {
+        "label": "High detail",
+        "good_triangles": 250000,
+        "max_triangles": 1000000,
+        "good_materials": 16,
+        "max_materials": 64,
+        "max_bounds": 12.0,
+    },
+    "print_cleanup": {
+        "label": "Print cleanup",
+        "good_triangles": 150000,
+        "max_triangles": 500000,
+        "good_materials": 4,
+        "max_materials": 16,
+        "max_bounds": 0.5,
+    },
+}
+TARGET_PROFILE_ITEMS = tuple(
+    (profile_id, config["label"], profile_id)
+    for profile_id, config in TARGET_PROFILES.items()
+)
 
 
 def _settings(context):
@@ -79,7 +112,7 @@ def _request_workspace(api_base, access_token):
         headers={
             "Authorization": f"Bearer {access_token.strip()}",
             "Accept": "application/json",
-            "User-Agent": "BudsCollab-Blender/0.1.3",
+            "User-Agent": "BudsCollab-Blender/0.1.4",
         },
         method="GET",
     )
@@ -113,7 +146,13 @@ def _selected_meshes(context):
     return [obj for obj in context.selected_objects if obj.type == "MESH"]
 
 
+def _active_profile(settings):
+    return TARGET_PROFILES.get(settings.target_profile, TARGET_PROFILES["room_object"])
+
+
 def _collect_asset_report(context):
+    settings = _settings(context)
+    profile = _active_profile(settings)
     meshes = _selected_meshes(context)
     if len(meshes) == 0:
         return False, "Select one or more mesh objects before checking the asset."
@@ -136,22 +175,22 @@ def _collect_asset_report(context):
     notes = []
     if vertex_count == 0 or triangle_count == 0:
         warnings.append("no renderable geometry")
-    if triangle_count > HEAVY_TRIANGLE_COUNT:
+    if triangle_count > profile["max_triangles"]:
         warnings.append("very high triangle count")
-    elif triangle_count > GOOD_TRIANGLE_COUNT:
+    elif triangle_count > profile["good_triangles"]:
         notes.append("triangle count above lightweight target")
-    if material_slots > HEAVY_MATERIAL_SLOTS:
+    if material_slots > profile["max_materials"]:
         warnings.append("too many material slots")
-    elif material_slots > GOOD_MATERIAL_SLOTS:
+    elif material_slots > profile["good_materials"]:
         notes.append("material slots above lightweight target")
-    if largest_dimension > LARGE_BOUNDS_METERS:
+    if largest_dimension > profile["max_bounds"]:
         warnings.append("large object bounds")
     if missing_materials:
         warnings.append(f"{len(missing_materials)} mesh object(s) without materials")
 
     readiness = "Good" if not warnings and not notes else "Review" if not warnings else "Needs fixes"
     status = (
-        f"{readiness}: {len(meshes)} mesh object(s), {vertex_count:,} vertices, "
+        f"{readiness} for {profile['label']}: {len(meshes)} mesh object(s), {vertex_count:,} vertices, "
         f"{triangle_count:,} triangles, {material_slots} material slot(s), "
         f"{largest_dimension:.1f}m max bounds"
     )
@@ -206,6 +245,12 @@ class BudsCollabBridgeSettings(bpy.types.PropertyGroup):
     validation_summary: bpy.props.StringProperty(
         name="Asset Check",
         default="No asset checked",
+    )
+    target_profile: bpy.props.EnumProperty(
+        name="Target",
+        items=TARGET_PROFILE_ITEMS,
+        default="room_object",
+        description="Validation target for this export",
     )
     export_path: bpy.props.StringProperty(
         name="GLB Export Path",
@@ -342,6 +387,53 @@ class BUDSCOLLAB_OT_export_selection(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class BUDSCOLLAB_OT_prepare_selection(bpy.types.Operator):
+    bl_idname = "budscollab.prepare_selection"
+    bl_label = "Prepare Selected Meshes"
+
+    def execute(self, context):
+        meshes = _selected_meshes(context)
+        settings = _settings(context)
+        if len(meshes) == 0:
+            settings.status = "Select mesh objects first"
+            self.report({"ERROR"}, "Select one or more mesh objects before preparing.")
+            return {"CANCELLED"}
+
+        original_active = context.view_layer.objects.active
+        original_selected = list(context.selected_objects)
+        prepared = 0
+        try:
+            bpy.ops.object.mode_set(mode="OBJECT")
+        except Exception:
+            pass
+
+        for obj in meshes:
+            bpy.ops.object.select_all(action="DESELECT")
+            obj.select_set(True)
+            context.view_layer.objects.active = obj
+            try:
+                bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
+                bpy.ops.object.mode_set(mode="EDIT")
+                bpy.ops.mesh.select_all(action="SELECT")
+                bpy.ops.mesh.normals_make_consistent(inside=False)
+                bpy.ops.object.mode_set(mode="OBJECT")
+                prepared += 1
+            except Exception as error:
+                settings.status = "Prepare selected failed"
+                self.report({"ERROR"}, f"Could not prepare {obj.name}: {error}")
+                return {"CANCELLED"}
+        bpy.ops.object.select_all(action="DESELECT")
+        for obj in original_selected:
+            obj.select_set(True)
+        context.view_layer.objects.active = original_active
+
+        ok, summary = _collect_asset_report(context)
+        settings.validation_summary = summary
+        settings.status = f"Prepared {prepared} mesh object(s)"
+        self.report({"INFO"} if ok else {"WARNING"}, settings.status)
+        return {"FINISHED"}
+
+
 class BUDSCOLLAB_OT_open_room(bpy.types.Operator):
     bl_idname = "budscollab.open_room"
     bl_label = "Open Selected Room"
@@ -387,8 +479,10 @@ class BUDSCOLLAB_PT_bridge_panel(bpy.types.Panel):
 
         asset = layout.box()
         asset.label(text="Asset")
+        asset.prop(settings, "target_profile")
         asset.label(text=settings.validation_summary)
         asset.operator("budscollab.check_selection")
+        asset.operator("budscollab.prepare_selection")
         asset.prop(settings, "export_path")
         asset.operator("budscollab.export_selection")
 
@@ -401,6 +495,7 @@ CLASSES = (
     BUDSCOLLAB_OT_refresh_workspace,
     BUDSCOLLAB_OT_check_selection,
     BUDSCOLLAB_OT_export_selection,
+    BUDSCOLLAB_OT_prepare_selection,
     BUDSCOLLAB_OT_open_room,
     BUDSCOLLAB_PT_bridge_panel,
 )

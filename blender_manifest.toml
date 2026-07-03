@@ -1,6 +1,6 @@
 schema_version = "1.0.0"
 id = "budscollab_for_blender"
-version = "0.1.3"
+version = "0.1.4"
 name = "BudsCollab for Blender"
 tagline = "Connect Blender to BudsCollab spaces and prepare GLB assets"
 maintainer = "BudsCollab"
