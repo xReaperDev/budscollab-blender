@@ -1,7 +1,7 @@
 bl_info = {
     "name": "BudsCollab for Blender",
     "author": "BudsCollab",
-    "version": (0, 1, 2),
+    "version": (0, 1, 3),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > BudsCollab",
     "description": "Connect Blender to BudsCollab spaces and prepare GLB assets.",
@@ -18,6 +18,11 @@ import bpy
 
 WORKSPACE_ENDPOINT = "/api/creator-tools/workspace"
 NONE_ID = "__none__"
+GOOD_TRIANGLE_COUNT = 70000
+HEAVY_TRIANGLE_COUNT = 250000
+GOOD_MATERIAL_SLOTS = 8
+HEAVY_MATERIAL_SLOTS = 32
+LARGE_BOUNDS_METERS = 6.0
 
 
 def _settings(context):
@@ -74,7 +79,7 @@ def _request_workspace(api_base, access_token):
         headers={
             "Authorization": f"Bearer {access_token.strip()}",
             "Accept": "application/json",
-            "User-Agent": "BudsCollab-Blender/0.1.2",
+            "User-Agent": "BudsCollab-Blender/0.1.3",
         },
         method="GET",
     )
@@ -93,7 +98,7 @@ def _request_workspace(api_base, access_token):
         raise RuntimeError("BudsCollab returned non-JSON workspace data") from error
     if not isinstance(parsed, dict) or parsed.get("ok") is not True:
         message = parsed.get("error") if isinstance(parsed, dict) else "invalid_response"
-        raise RuntimeError(f"BudsCollab rejected the token: {message}")
+        raise RuntimeError(f"BudsCollab rejected the Creator Tools token: {message}")
     spaces = parsed.get("spaces")
     if not isinstance(spaces, list):
         raise RuntimeError("BudsCollab workspace response is missing spaces")
@@ -116,29 +121,44 @@ def _collect_asset_report(context):
     vertex_count = 0
     triangle_count = 0
     material_slots = 0
+    largest_dimension = 0.0
     missing_materials = []
     for obj in meshes:
         mesh = obj.data
         vertex_count += len(mesh.vertices)
         triangle_count += sum(max(len(poly.vertices) - 2, 1) for poly in mesh.polygons)
         material_slots += len(obj.material_slots)
+        largest_dimension = max(largest_dimension, max(obj.dimensions))
         if len(obj.material_slots) == 0:
             missing_materials.append(obj.name)
 
     warnings = []
+    notes = []
     if vertex_count == 0 or triangle_count == 0:
         warnings.append("no renderable geometry")
-    if vertex_count > 250000:
-        warnings.append("high vertex count")
+    if triangle_count > HEAVY_TRIANGLE_COUNT:
+        warnings.append("very high triangle count")
+    elif triangle_count > GOOD_TRIANGLE_COUNT:
+        notes.append("triangle count above lightweight target")
+    if material_slots > HEAVY_MATERIAL_SLOTS:
+        warnings.append("too many material slots")
+    elif material_slots > GOOD_MATERIAL_SLOTS:
+        notes.append("material slots above lightweight target")
+    if largest_dimension > LARGE_BOUNDS_METERS:
+        warnings.append("large object bounds")
     if missing_materials:
         warnings.append(f"{len(missing_materials)} mesh object(s) without materials")
 
+    readiness = "Good" if not warnings and not notes else "Review" if not warnings else "Needs fixes"
     status = (
-        f"{len(meshes)} mesh object(s), {vertex_count:,} vertices, "
-        f"{triangle_count:,} triangles, {material_slots} material slot(s)"
+        f"{readiness}: {len(meshes)} mesh object(s), {vertex_count:,} vertices, "
+        f"{triangle_count:,} triangles, {material_slots} material slot(s), "
+        f"{largest_dimension:.1f}m max bounds"
     )
     if warnings:
         return False, f"{status}. Check: {', '.join(warnings)}."
+    if notes:
+        return True, f"{status}. Optimize: {', '.join(notes)}."
     return True, f"{status}. Ready to export as GLB."
 
 
@@ -170,9 +190,9 @@ class BudsCollabBridgeSettings(bpy.types.PropertyGroup):
         default="https://app.budscollab.com",
     )
     access_token: bpy.props.StringProperty(
-        name="Access Token",
+        name="Creator Tools Token",
         subtype="PASSWORD",
-        description="BudsCollab bearer token with mcp:read workspace scope",
+        description="BudsCollab Creator Tools token for loading your spaces and rooms",
     )
     status: bpy.props.StringProperty(name="Status", default="Not connected")
     spaces: bpy.props.CollectionProperty(type=BudsCollabSpaceItem)
@@ -214,7 +234,7 @@ class BUDSCOLLAB_OT_refresh_workspace(bpy.types.Operator):
         settings = _settings(context)
         if not settings.access_token.strip():
             settings.status = "Access token required"
-            self.report({"ERROR"}, "Paste a BudsCollab access token first.")
+            self.report({"ERROR"}, "Paste a BudsCollab Creator Tools token first.")
             return {"CANCELLED"}
 
         try:

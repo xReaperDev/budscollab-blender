@@ -4,7 +4,7 @@ Blender add-on for connecting to BudsCollab spaces from the 3D View and preparin
 
 ## Install from a ZIP
 
-1. Download `budscollab-blender-v0.1.2.zip` from the public repo release.
+1. Download `budscollab-blender-v0.1.3.zip` from the public repo release.
 2. Open Blender.
 3. Go to `Edit > Preferences > Add-ons`.
 4. Click `Install from Disk...`.
@@ -21,10 +21,12 @@ https://github.com/xReaperDev/budscollab-blender/releases
 Open the `BudsCollab` tab in the 3D View sidebar.
 
 1. Click `Open BudsCollab Login` if you need to sign in.
-2. Create a read-only MCP token from the BudsCollab MCP connect guide, then paste it into `Access Token`.
+2. Create a BudsCollab Creator Tools token from BudsCollab settings, then paste it into `Creator Tools Token`.
 3. Click `Connect and Load Spaces`.
 4. Pick a fetched space and room from the dropdowns.
 5. Use `Open Selected Room` to open that room in BudsCollab.
 6. Select mesh objects, run `Check Selected Asset`, then `Export Selected GLB`.
+
+The asset check follows the same creator-tool pattern used by mature avatar/content pipelines: catch obvious performance and readiness issues before upload. It reports mesh count, vertices, triangles, material slots, bounds, and missing materials.
 
 This package is intentionally Blender-only. Cross-app handoff and inbound import are not shown in this add-on until those flows have real endpoints.
