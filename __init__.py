@@ -1,58 +1,340 @@
 bl_info = {
     "name": "BudsCollab for Blender",
     "author": "BudsCollab",
-    "version": (0, 1, 0),
+    "version": (0, 1, 1),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > BudsCollab",
-    "description": "Create, validate, and send Blender assets through BudsCollab.",
+    "description": "Connect Blender to BudsCollab spaces and prepare GLB assets.",
     "category": "Import-Export",
 }
 
+import json
+import os
+import urllib.error
+import urllib.request
+from pathlib import Path
+
 import bpy
+
+WORKSPACE_ENDPOINT = "/api/creator-tools/workspace"
+NONE_ID = "__none__"
+
+
+def _settings(context):
+    return context.scene.budscollab_bridge
+
+
+def _space_items(self, context):
+    settings = _settings(context)
+    if len(settings.spaces) == 0:
+        return [(NONE_ID, "Connect to load spaces", "Paste a token and refresh spaces")]
+    return [
+        (space.space_id, f"{space.name} ({space.role})", space.space_id)
+        for space in settings.spaces
+    ]
+
+
+def _room_items(self, context):
+    settings = _settings(context)
+    rooms = [
+        room
+        for room in settings.rooms
+        if room.space_id == settings.selected_space_id
+    ]
+    if len(rooms) == 0:
+        return [(NONE_ID, "No rooms loaded", "Refresh spaces after selecting a valid token")]
+    return [
+        (room.room_id, f"{room.emoji} {room.name}".strip(), room.room_id)
+        for room in rooms
+    ]
+
+
+def _selected_space_updated(self, context):
+    settings = _settings(context)
+    rooms = [
+        room
+        for room in settings.rooms
+        if room.space_id == settings.selected_space_id
+    ]
+    settings.selected_room_id = rooms[0].room_id if rooms else NONE_ID
+
+
+def _normalize_api_base(value):
+    trimmed = value.strip().rstrip("/")
+    return trimmed or "https://app.budscollab.com"
+
+
+def _workspace_url(api_base):
+    return f"{_normalize_api_base(api_base)}{WORKSPACE_ENDPOINT}"
+
+
+def _request_workspace(api_base, access_token):
+    request = urllib.request.Request(
+        _workspace_url(api_base),
+        headers={
+            "Authorization": f"Bearer {access_token.strip()}",
+            "Accept": "application/json",
+            "User-Agent": "BudsCollab-Blender/0.1.1",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            payload = response.read().decode("utf-8")
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {error.code}: {detail[:240]}") from error
+    except urllib.error.URLError as error:
+        raise RuntimeError(f"Network error: {error.reason}") from error
+
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("BudsCollab returned non-JSON workspace data") from error
+    if not isinstance(parsed, dict) or parsed.get("ok") is not True:
+        message = parsed.get("error") if isinstance(parsed, dict) else "invalid_response"
+        raise RuntimeError(f"BudsCollab rejected the token: {message}")
+    spaces = parsed.get("spaces")
+    if not isinstance(spaces, list):
+        raise RuntimeError("BudsCollab workspace response is missing spaces")
+    return spaces
+
+
+def _as_text(value, fallback=""):
+    return value if isinstance(value, str) and value else fallback
+
+
+def _selected_meshes(context):
+    return [obj for obj in context.selected_objects if obj.type == "MESH"]
+
+
+def _collect_asset_report(context):
+    meshes = _selected_meshes(context)
+    if len(meshes) == 0:
+        return False, "Select one or more mesh objects before checking the asset."
+
+    vertex_count = 0
+    triangle_count = 0
+    material_slots = 0
+    missing_materials = []
+    for obj in meshes:
+        mesh = obj.data
+        vertex_count += len(mesh.vertices)
+        triangle_count += sum(max(len(poly.vertices) - 2, 1) for poly in mesh.polygons)
+        material_slots += len(obj.material_slots)
+        if len(obj.material_slots) == 0:
+            missing_materials.append(obj.name)
+
+    warnings = []
+    if vertex_count == 0 or triangle_count == 0:
+        warnings.append("no renderable geometry")
+    if vertex_count > 250000:
+        warnings.append("high vertex count")
+    if missing_materials:
+        warnings.append(f"{len(missing_materials)} mesh object(s) without materials")
+
+    status = (
+        f"{len(meshes)} mesh object(s), {vertex_count:,} vertices, "
+        f"{triangle_count:,} triangles, {material_slots} material slot(s)"
+    )
+    if warnings:
+        return False, f"{status}. Check: {', '.join(warnings)}."
+    return True, f"{status}. Ready to export as GLB."
+
+
+def _room_by_id(settings, room_id):
+    for room in settings.rooms:
+        if room.room_id == room_id:
+            return room
+    return None
+
+
+class BudsCollabSpaceItem(bpy.types.PropertyGroup):
+    space_id: bpy.props.StringProperty(name="Space ID")
+    name: bpy.props.StringProperty(name="Name")
+    role: bpy.props.StringProperty(name="Role", default="viewer")
+    open_url: bpy.props.StringProperty(name="Open URL")
+
+
+class BudsCollabRoomItem(bpy.types.PropertyGroup):
+    room_id: bpy.props.StringProperty(name="Room ID")
+    space_id: bpy.props.StringProperty(name="Space ID")
+    name: bpy.props.StringProperty(name="Name")
+    emoji: bpy.props.StringProperty(name="Emoji")
+    open_url: bpy.props.StringProperty(name="Open URL")
 
 
 class BudsCollabBridgeSettings(bpy.types.PropertyGroup):
-    space_id: bpy.props.StringProperty(name="Space", default="Select a space")
-    room_id: bpy.props.StringProperty(name="Room", default="Select a room")
-    status: bpy.props.StringProperty(name="Status", default="Not logged in")
+    api_base_url: bpy.props.StringProperty(
+        name="BudsCollab URL",
+        default="https://app.budscollab.com",
+    )
+    access_token: bpy.props.StringProperty(
+        name="Access Token",
+        subtype="PASSWORD",
+        description="BudsCollab bearer token with mcp:read workspace scope",
+    )
+    status: bpy.props.StringProperty(name="Status", default="Not connected")
+    spaces: bpy.props.CollectionProperty(type=BudsCollabSpaceItem)
+    rooms: bpy.props.CollectionProperty(type=BudsCollabRoomItem)
+    selected_space_id: bpy.props.EnumProperty(
+        name="Space",
+        items=_space_items,
+        update=_selected_space_updated,
+    )
+    selected_room_id: bpy.props.EnumProperty(name="Room", items=_room_items)
+    validation_summary: bpy.props.StringProperty(
+        name="Asset Check",
+        default="No asset checked",
+    )
+    export_path: bpy.props.StringProperty(
+        name="GLB Export Path",
+        subtype="FILE_PATH",
+        default="//budscollab-export.glb",
+    )
 
 
-class BUDSCOLLAB_OT_login(bpy.types.Operator):
-    bl_idname = "budscollab.login"
-    bl_label = "Login"
+class BUDSCOLLAB_OT_open_login(bpy.types.Operator):
+    bl_idname = "budscollab.open_login"
+    bl_label = "Open BudsCollab Login"
 
     def execute(self, context):
-        context.scene.budscollab_bridge.status = "Connected"
-        self.report({"INFO"}, "BudsCollab login placeholder")
+        settings = _settings(context)
+        bpy.ops.wm.url_open(
+            url=f"{_normalize_api_base(settings.api_base_url)}/sign-in"
+        )
         return {"FINISHED"}
 
 
-class BUDSCOLLAB_OT_validate_selection(bpy.types.Operator):
-    bl_idname = "budscollab.validate_selection"
-    bl_label = "Validate Selection"
+class BUDSCOLLAB_OT_refresh_workspace(bpy.types.Operator):
+    bl_idname = "budscollab.refresh_workspace"
+    bl_label = "Connect and Load Spaces"
 
     def execute(self, context):
-        context.scene.budscollab_bridge.status = "Ready to upload"
-        self.report({"INFO"}, "Validation placeholder: selection is ready")
+        settings = _settings(context)
+        if not settings.access_token.strip():
+            settings.status = "Access token required"
+            self.report({"ERROR"}, "Paste a BudsCollab access token first.")
+            return {"CANCELLED"}
+
+        try:
+            spaces_payload = _request_workspace(
+                settings.api_base_url,
+                settings.access_token,
+            )
+        except RuntimeError as error:
+            settings.status = "Connection failed"
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+
+        settings.spaces.clear()
+        settings.rooms.clear()
+        first_space_id = ""
+        first_room_id = ""
+        room_count = 0
+
+        for space_payload in spaces_payload:
+            if not isinstance(space_payload, dict):
+                continue
+            space_id = _as_text(space_payload.get("spaceId"))
+            name = _as_text(space_payload.get("name"), space_id)
+            if not space_id:
+                continue
+            if not first_space_id:
+                first_space_id = space_id
+            space = settings.spaces.add()
+            space.space_id = space_id
+            space.name = name
+            space.role = _as_text(space_payload.get("role"), "viewer")
+            space.open_url = _as_text(space_payload.get("openUrl"))
+
+            rooms_payload = space_payload.get("rooms")
+            if not isinstance(rooms_payload, list):
+                continue
+            for room_payload in rooms_payload:
+                if not isinstance(room_payload, dict):
+                    continue
+                room_id = _as_text(room_payload.get("roomId"))
+                room_name = _as_text(room_payload.get("name"), room_id)
+                if not room_id:
+                    continue
+                room = settings.rooms.add()
+                room.room_id = room_id
+                room.space_id = space_id
+                room.name = room_name
+                room.emoji = _as_text(room_payload.get("emoji"))
+                room.open_url = _as_text(room_payload.get("openUrl"))
+                room_count += 1
+                if not first_room_id:
+                    first_room_id = room_id
+
+        settings.selected_space_id = first_space_id or NONE_ID
+        settings.selected_room_id = first_room_id or NONE_ID
+        settings.status = f"Loaded {len(settings.spaces)} space(s), {room_count} room(s)"
         return {"FINISHED"}
 
 
-class BUDSCOLLAB_OT_upload_selection(bpy.types.Operator):
-    bl_idname = "budscollab.upload_selection"
-    bl_label = "Upload Selected"
+class BUDSCOLLAB_OT_check_selection(bpy.types.Operator):
+    bl_idname = "budscollab.check_selection"
+    bl_label = "Check Selected Asset"
 
     def execute(self, context):
-        context.scene.budscollab_bridge.status = "Upload queued"
-        self.report({"INFO"}, "Upload selected placeholder")
+        ok, summary = _collect_asset_report(context)
+        settings = _settings(context)
+        settings.validation_summary = summary
+        settings.status = "Asset check passed" if ok else "Asset check needs attention"
+        self.report({"INFO"} if ok else {"WARNING"}, summary)
         return {"FINISHED"}
 
 
-class BUDSCOLLAB_OT_open_preview(bpy.types.Operator):
-    bl_idname = "budscollab.open_preview"
-    bl_label = "Open Web Preview"
+class BUDSCOLLAB_OT_export_selection(bpy.types.Operator):
+    bl_idname = "budscollab.export_selection"
+    bl_label = "Export Selected GLB"
 
     def execute(self, context):
-        bpy.ops.wm.url_open(url="https://app.budscollab.com/preview/3d")
+        settings = _settings(context)
+        ok, summary = _collect_asset_report(context)
+        settings.validation_summary = summary
+        if not ok:
+            settings.status = "Fix asset check before export"
+            self.report({"ERROR"}, summary)
+            return {"CANCELLED"}
+
+        export_path = bpy.path.abspath(settings.export_path)
+        if not export_path.lower().endswith(".glb"):
+            export_path = f"{export_path}.glb"
+        Path(os.path.dirname(export_path)).mkdir(parents=True, exist_ok=True)
+
+        try:
+            bpy.ops.export_scene.gltf(
+                filepath=export_path,
+                export_format="GLB",
+                use_selection=True,
+            )
+        except Exception as error:
+            settings.status = "GLB export failed"
+            self.report({"ERROR"}, f"GLB export failed: {error}")
+            return {"CANCELLED"}
+
+        settings.export_path = export_path
+        settings.status = f"Exported {os.path.basename(export_path)}"
+        self.report({"INFO"}, f"Exported GLB: {export_path}")
+        return {"FINISHED"}
+
+
+class BUDSCOLLAB_OT_open_room(bpy.types.Operator):
+    bl_idname = "budscollab.open_room"
+    bl_label = "Open Selected Room"
+
+    def execute(self, context):
+        settings = _settings(context)
+        room = _room_by_id(settings, settings.selected_room_id)
+        if room is None or not room.open_url:
+            settings.status = "Select a loaded room first"
+            self.report({"ERROR"}, "Refresh spaces and select a BudsCollab room.")
+            return {"CANCELLED"}
+        bpy.ops.wm.url_open(url=room.open_url)
+        settings.status = f"Opened {room.name}"
         return {"FINISHED"}
 
 
@@ -65,32 +347,39 @@ class BUDSCOLLAB_PT_bridge_panel(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        settings = context.scene.budscollab_bridge
+        settings = _settings(context)
 
         layout.label(text="BudsCollab for Blender")
         layout.prop(settings, "status")
-        layout.operator("budscollab.login")
 
         layout.separator()
-        layout.prop(settings, "space_id")
-        layout.prop(settings, "room_id")
+        layout.prop(settings, "api_base_url")
+        layout.prop(settings, "access_token")
+        row = layout.row(align=True)
+        row.operator("budscollab.open_login")
+        row.operator("budscollab.refresh_workspace")
 
         layout.separator()
-        layout.operator("budscollab.validate_selection")
-        layout.operator("budscollab.upload_selection")
-        layout.operator("budscollab.open_preview")
+        layout.prop(settings, "selected_space_id")
+        layout.prop(settings, "selected_room_id")
+        layout.operator("budscollab.open_room")
 
         layout.separator()
-        layout.label(text="Import from BudsCollab")
-        layout.label(text="Send/open in Unity later")
+        layout.prop(settings, "validation_summary")
+        layout.operator("budscollab.check_selection")
+        layout.prop(settings, "export_path")
+        layout.operator("budscollab.export_selection")
 
 
 CLASSES = (
+    BudsCollabSpaceItem,
+    BudsCollabRoomItem,
     BudsCollabBridgeSettings,
-    BUDSCOLLAB_OT_login,
-    BUDSCOLLAB_OT_validate_selection,
-    BUDSCOLLAB_OT_upload_selection,
-    BUDSCOLLAB_OT_open_preview,
+    BUDSCOLLAB_OT_open_login,
+    BUDSCOLLAB_OT_refresh_workspace,
+    BUDSCOLLAB_OT_check_selection,
+    BUDSCOLLAB_OT_export_selection,
+    BUDSCOLLAB_OT_open_room,
     BUDSCOLLAB_PT_bridge_panel,
 )
 
@@ -98,7 +387,9 @@ CLASSES = (
 def register():
     for cls in CLASSES:
         bpy.utils.register_class(cls)
-    bpy.types.Scene.budscollab_bridge = bpy.props.PointerProperty(type=BudsCollabBridgeSettings)
+    bpy.types.Scene.budscollab_bridge = bpy.props.PointerProperty(
+        type=BudsCollabBridgeSettings
+    )
 
 
 def unregister():
