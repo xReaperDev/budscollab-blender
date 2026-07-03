@@ -1,7 +1,7 @@
 bl_info = {
     "name": "BudsCollab for Blender",
     "author": "BudsCollab",
-    "version": (0, 1, 1),
+    "version": (0, 1, 2),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > BudsCollab",
     "description": "Connect Blender to BudsCollab spaces and prepare GLB assets.",
@@ -74,7 +74,7 @@ def _request_workspace(api_base, access_token):
         headers={
             "Authorization": f"Bearer {access_token.strip()}",
             "Accept": "application/json",
-            "User-Agent": "BudsCollab-Blender/0.1.1",
+            "User-Agent": "BudsCollab-Blender/0.1.2",
         },
         method="GET",
     )
@@ -349,26 +349,28 @@ class BUDSCOLLAB_PT_bridge_panel(bpy.types.Panel):
         layout = self.layout
         settings = _settings(context)
 
-        layout.label(text="BudsCollab for Blender")
-        layout.prop(settings, "status")
+        connection = layout.box()
+        connection.label(text="Connection")
+        connection.label(text=f"Status: {settings.status}")
+        connection.prop(settings, "api_base_url")
+        connection.prop(settings, "access_token")
+        connection.operator("budscollab.open_login")
+        connection.operator("budscollab.refresh_workspace")
 
-        layout.separator()
-        layout.prop(settings, "api_base_url")
-        layout.prop(settings, "access_token")
-        row = layout.row(align=True)
-        row.operator("budscollab.open_login")
-        row.operator("budscollab.refresh_workspace")
+        destination = layout.box()
+        destination.label(text="Destination")
+        destination.prop(settings, "selected_space_id")
+        destination.prop(settings, "selected_room_id")
+        open_room = destination.row()
+        open_room.enabled = len(settings.rooms) > 0
+        open_room.operator("budscollab.open_room")
 
-        layout.separator()
-        layout.prop(settings, "selected_space_id")
-        layout.prop(settings, "selected_room_id")
-        layout.operator("budscollab.open_room")
-
-        layout.separator()
-        layout.prop(settings, "validation_summary")
-        layout.operator("budscollab.check_selection")
-        layout.prop(settings, "export_path")
-        layout.operator("budscollab.export_selection")
+        asset = layout.box()
+        asset.label(text="Asset")
+        asset.label(text=settings.validation_summary)
+        asset.operator("budscollab.check_selection")
+        asset.prop(settings, "export_path")
+        asset.operator("budscollab.export_selection")
 
 
 CLASSES = (

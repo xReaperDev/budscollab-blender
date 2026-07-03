@@ -4,7 +4,7 @@ Blender add-on for connecting to BudsCollab spaces from the 3D View and preparin
 
 ## Install from a ZIP
 
-1. Download `budscollab-blender-v0.1.1.zip` from the public repo release.
+1. Download `budscollab-blender-v0.1.2.zip` from the public repo release.
 2. Open Blender.
 3. Go to `Edit > Preferences > Add-ons`.
 4. Click `Install from Disk...`.
