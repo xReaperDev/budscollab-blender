@@ -21,7 +21,7 @@ https://github.com/xReaperDev/budscollab-blender/releases
 Open the `BudsCollab` tab in the 3D View sidebar.
 
 1. Click `Open BudsCollab Login` if you need to sign in.
-2. Paste a BudsCollab bearer token with `mcp:read` scope into `Access Token`.
+2. Create a read-only MCP token from the BudsCollab MCP connect guide, then paste it into `Access Token`.
 3. Click `Connect and Load Spaces`.
 4. Pick a fetched space and room from the dropdowns.
 5. Use `Open Selected Room` to open that room in BudsCollab.
